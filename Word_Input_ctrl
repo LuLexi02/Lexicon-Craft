@@ -1,0 +1,66 @@
+extends Node
+
+## Not an autoload — instance this where you need it (e.g. one per game scene).
+## Front door for both word-input methods. A drag-built path and a typed word
+## are deliberately funneled through the exact same validation and queuing
+## path — neither is safer, faster, or more "correct" than the other.
+
+signal word_submitted(word: String, result: ScoreManager.ClaimResult)
+
+var current_drag_path: Array = []
+
+# ---- Drag input (for once real board visuals exist — see letter_tile.gd) ----
+
+func on_drag_cell_entered(cell: BoardCell) -> void:
+	if current_drag_path.has(cell):
+		return
+	current_drag_path.append(cell)
+
+func on_drag_released() -> void:
+	var word := _build_word_from_path(current_drag_path)
+	_try_submit(word, current_drag_path)
+	current_drag_path.clear()
+
+func cancel_drag() -> void:
+	current_drag_path.clear()
+
+func _build_word_from_path(path: Array) -> String:
+	var s := ""
+	for cell in path:
+		s += cell.letter
+	return s
+
+# ---- Typed input ----
+
+## Called from the word list beneath the board. Accepts one word, or several
+## separated by commas/spaces, so a player can bank several finds from the
+## same turn in one submission — each is still validated and traced on the
+## board individually, exactly like a drag would be.
+func submit_typed_text(raw_input: String) -> void:
+	for candidate in _split_words(raw_input):
+		var path := BoardManager.find_path_for_word(candidate)
+		_try_submit(candidate, path)
+
+func _split_words(raw_input: String) -> Array[String]:
+	var result: Array[String] = []
+	for comma_part in raw_input.split(","):
+		for piece in comma_part.strip_edges().split(" "):
+			var trimmed := piece.strip_edges()
+			if trimmed != "":
+				result.append(trimmed)
+	return result
+
+## Lets the active player remove a word they mistakenly queued this turn.
+func retract_word(word: String) -> bool:
+	return ScoreManager.retract_word(word)
+
+func _try_submit(word: String, path: Array) -> void:
+	if path.is_empty():
+		return # word isn't actually traceable on the current board
+	if not BoardManager.is_path_connected_and_distinct(path):
+		return
+	if not WordValidator.is_valid_word(word):
+		return
+
+	var result := ScoreManager.try_queue_word(word)
+	word_submitted.emit(word.to_upper(), result)
