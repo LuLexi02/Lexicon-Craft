@@ -1,202 +1,176 @@
-using System.Collections.Generic;
-using UnityEngine;
+extends Node
 
-namespace Lexicon
-{
-    /// <summary>
-    /// Owns the persistent board. Letters are introduced Connect-4 style: the
-    /// active player picks a column, and the letter drops under gravity to the
-    /// lowest currently-empty cell in that column. The board never clears — it
-    /// only ever fills up, until no column has room left.
-    /// </summary>
-    public class BoardManager : MonoBehaviour
-    {
-        [Header("Board size")]
-        [SerializeField] private int columns = 8;
-        [SerializeField] private int rows = 8;
-        [SerializeField] private float tileSpacing = 1.0f;
-        [SerializeField] private LetterTile tilePrefab;
+## Autoload singleton name: BoardManager
+##
+## Owns the persistent board. A turn's new letter drops into a chosen column
+## and falls to the lowest empty cell in it (Connect-4 gravity) — the player
+## picks a column, not a specific cell. The board never clears; it only fills
+## up, until every column is full, which is the game's end condition.
 
-        private LetterTile[,] grid; // [column, row], row 0 = bottom
+const COLUMNS := 8
+const ROWS := 8
 
-        // Rough English letter-frequency weighting (not tuned yet — placeholder
-        // distribution, swap for a properly weighted bag once the word list is chosen).
-        private const string LetterBag =
-            "EEEEEEEEEEEEAAAAAAAAAIIIIIIIIIOOOOOOOONNNNNNRRRRRRTTTTTTLLLLSSSSUUUUDDDDGGGBBCCMMPPFFHHVVWWYYKJXQZ";
+# Rough English letter frequency, weighted by repetition in this pool string.
+const LETTER_BAG := "EEEEEEEEEEEEAAAAAAAAAIIIIIIIIIOOOOOOOONNNNNNRRRRRRTTTTTTLLLLSSSSUUUUDDDDGGGBBCCMMPPFFHHVVWWYYKJXQZ"
 
-        public int Columns => columns;
-        public int Rows => rows;
+var grid: Array = [] # grid[column][row] = BoardCell
 
-        private void Awake()
-        {
-            grid = new LetterTile[columns, rows];
-            for (int c = 0; c < columns; c++)
-            {
-                for (int r = 0; r < rows; r++)
-                {
-                    var tile = Instantiate(tilePrefab, CellToWorld(c, r), Quaternion.identity, transform);
-                    tile.SetEmpty(c, r);
-                    grid[c, r] = tile;
-                }
-            }
-        }
+func _ready() -> void:
+	grid.resize(COLUMNS)
+	for c in range(COLUMNS):
+		var column_cells: Array = []
+		column_cells.resize(ROWS)
+		for r in range(ROWS):
+			column_cells[r] = BoardCell.new(c, r)
+		grid[c] = column_cells
 
-        private Vector3 CellToWorld(int column, int row) => new Vector3(column * tileSpacing, row * tileSpacing, 0f);
+func draw_letter_from_bag() -> String:
+	return LETTER_BAG[randi() % LETTER_BAG.length()]
 
-        public char DrawLetterFromBag() => LetterBag[Random.Range(0, LetterBag.Length)];
+func is_column_full(column: int) -> bool:
+	if column < 0 or column >= COLUMNS:
+		return true
+	return not grid[column][ROWS - 1].is_empty()
 
-        public bool IsColumnFull(int column)
-        {
-            if (column < 0 || column >= columns) return true;
-            return !grid[column, rows - 1].IsEmpty;
-        }
+## Drops a letter into the given column. Returns the row it settled at, or -1
+## if the column is already full (caller should ask the player to pick another).
+func drop_letter_in_column(column: int, letter: String) -> int:
+	if column < 0 or column >= COLUMNS:
+		return -1
+	for r in range(ROWS):
+		if grid[column][r].is_empty():
+			grid[column][r].place_letter(letter)
+			return r
+	return -1
 
-        /// <summary>
-        /// Drops a letter into the given column under gravity. Returns false if
-        /// the column is already full — caller (TurnManager/UI) should require the
-        /// active player to choose a different column in that case.
-        /// </summary>
-        public bool TryDropLetter(int column, char letter)
-        {
-            if (IsColumnFull(column)) return false;
+func has_any_empty_cell() -> bool:
+	for c in range(COLUMNS):
+		if not is_column_full(c):
+			return true
+	return false
 
-            for (int r = 0; r < rows; r++)
-            {
-                if (!grid[column, r].IsEmpty) continue;
-                grid[column, r].PlaceLetter(letter);
-                return true;
-            }
-            return false;
-        }
+func get_cell(column: int, row: int) -> BoardCell:
+	if not _in_bounds(column, row):
+		return null
+	return grid[column][row]
 
-        public bool IsBoardFull()
-        {
-            for (int c = 0; c < columns; c++)
-                if (!IsColumnFull(c)) return false;
-            return true;
-        }
+func _in_bounds(column: int, row: int) -> bool:
+	return column >= 0 and column < COLUMNS and row >= 0 and row < ROWS
 
-        public LetterTile GetTile(int column, int row)
-        {
-            if (column < 0 || column >= columns || row < 0 || row >= rows) return null;
-            return grid[column, row];
-        }
+## Any-direction adjacency check: each next cell in a path must be orthogonally
+## or diagonally adjacent to the previous one, and no cell may repeat.
+func is_path_connected_and_distinct(path: Array) -> bool:
+	var seen := {}
+	for i in range(path.size()):
+		var cell: BoardCell = path[i]
+		if seen.has(cell):
+			return false
+		seen[cell] = true
+		if i == 0:
+			continue
 
-        /// <summary>Any-direction adjacency per Lexicon's word-formation rule, and no
-        /// tile reused twice within the same word.</summary>
-        public bool IsPathConnectedAndDistinct(List<LetterTile> path)
-        {
-            var seen = new HashSet<LetterTile>();
-            for (int i = 0; i < path.Count; i++)
-            {
-                if (!seen.Add(path[i])) return false;
-                if (i == 0) continue;
+		var prev: BoardCell = path[i - 1]
+		var dc: int = abs(cell.column - prev.column)
+		var dr: int = abs(cell.row - prev.row)
+		var adjacent: bool = dc <= 1 and dr <= 1 and (dc + dr) > 0
+		if not adjacent:
+			return false
+	return true
 
-                int dc = Mathf.Abs(path[i].Column - path[i - 1].Column);
-                int dr = Mathf.Abs(path[i].Row - path[i - 1].Row);
-                bool adjacent = dc <= 1 && dr <= 1 && (dc + dr) > 0;
-                if (!adjacent) return false;
-            }
-            return true;
-        }
+## Traces a path for a typed word (which arrives with no path attached).
+## Returns the first valid occurrence found, in any direction, or an empty
+## array if the word doesn't currently exist on the board.
+func find_path_for_word(word: String) -> Array:
+	if word.is_empty():
+		return []
+	var upper := word.to_upper()
 
-        /// <summary>
-        /// Traces a path for a typed word (which has no drag path attached yet),
-        /// searching every start cell and direction. Returns the first valid path
-        /// found, or null if the word doesn't currently exist on the board.
-        /// </summary>
-        public List<LetterTile> FindPathForWord(string word)
-        {
-            word = word.ToUpperInvariant();
-            if (string.IsNullOrEmpty(word)) return null;
+	for c in range(COLUMNS):
+		for r in range(ROWS):
+			var cell: BoardCell = grid[c][r]
+			if cell.is_empty() or cell.letter != upper[0]:
+				continue
+			var path: Array = [cell]
+			var found := _try_extend_path(path, upper, 1)
+			if not found.is_empty():
+				return found
+	return []
 
-            for (int c = 0; c < columns; c++)
-            {
-                for (int r = 0; r < rows; r++)
-                {
-                    if (grid[c, r].IsEmpty || grid[c, r].Letter != word[0]) continue;
-                    var path = new List<LetterTile> { grid[c, r] };
-                    var found = TryExtendPath(path, word, 1);
-                    if (found != null) return found;
-                }
-            }
-            return null;
-        }
+func _try_extend_path(path: Array, word: String, next_index: int) -> Array:
+	if next_index == word.length():
+		return path
 
-        private List<LetterTile> TryExtendPath(List<LetterTile> path, string word, int nextIndex)
-        {
-            if (nextIndex == word.Length) return path;
+	var last: BoardCell = path[path.size() - 1]
+	for dc in range(-1, 2):
+		for dr in range(-1, 2):
+			if dc == 0 and dr == 0:
+				continue
+			var candidate := get_cell(last.column + dc, last.row + dr)
+			if candidate == null or candidate.is_empty() or path.has(candidate):
+				continue
+			if candidate.letter != word[next_index]:
+				continue
 
-            var last = path[path.Count - 1];
-            for (int dc = -1; dc <= 1; dc++)
-            {
-                for (int dr = -1; dr <= 1; dr++)
-                {
-                    if (dc == 0 && dr == 0) continue;
-                    var candidate = GetTile(last.Column + dc, last.Row + dr);
-                    if (candidate == null || candidate.IsEmpty || path.Contains(candidate)) continue;
-                    if (candidate.Letter != word[nextIndex]) continue;
+			path.append(candidate)
+			var result := _try_extend_path(path, word, next_index + 1)
+			if not result.is_empty():
+				return result
+			path.pop_back()
+	return []
 
-                    path.Add(candidate);
-                    var result = TryExtendPath(path, word, nextIndex + 1);
-                    if (result != null) return result;
-                    path.RemoveAt(path.Count - 1);
-                }
-            }
-            return null;
-        }
+## Scans the whole board for every currently valid, not-yet-claimed word.
+## Used by AIOpponent to decide what it "notices" — never used for human
+## input, since a human should never get a computed hint list.
+func find_all_valid_words() -> Array:
+	var results: Array = []
+	var seen_words := {}
 
-        /// <summary>
-        /// Every currently-formable, on-board word is a candidate for
-        /// SoloAIOpponent to "notice" — this brute-force scan is fine at Alpha's
-        /// board size, but would need indexing/optimisation at larger scales.
-        /// </summary>
-        public IEnumerable<(string word, List<LetterTile> path)> FindAllWordsOnBoard(WordValidator validator, int maxLength = 8)
-        {
-            var results = new List<(string, List<LetterTile>)>();
-            for (int c = 0; c < columns; c++)
-            {
-                for (int r = 0; r < rows; r++)
-                {
-                    if (grid[c, r].IsEmpty) continue;
-                    var path = new List<LetterTile> { grid[c, r] };
-                    ScanFrom(path, validator, maxLength, results);
-                }
-            }
-            return results;
-        }
+	for c in range(COLUMNS):
+		for r in range(ROWS):
+			var cell: BoardCell = grid[c][r]
+			if cell.is_empty():
+				continue
+			var path: Array = [cell]
+			_scan_from(path, seen_words, results)
+	return results
 
-        private void ScanFrom(List<LetterTile> path, WordValidator validator, int maxLength, List<(string, List<LetterTile>)> results)
-        {
-            if (path.Count >= 3)
-            {
-                string candidate = BuildWord(path);
-                if (validator.IsValidWord(candidate))
-                    results.Add((candidate, new List<LetterTile>(path)));
-            }
-            if (path.Count >= maxLength) return;
+func _scan_from(path: Array, seen_words: Dictionary, results: Array) -> void:
+	var word := _build_word(path)
+	if path.size() >= 3 and not seen_words.has(word) and not ScoreManager.is_word_already_claimed(word) \
+			and WordValidator.is_valid_word(word):
+		seen_words[word] = true
+		results.append({"word": word, "path": path.duplicate()})
 
-            var last = path[path.Count - 1];
-            for (int dc = -1; dc <= 1; dc++)
-            {
-                for (int dr = -1; dr <= 1; dr++)
-                {
-                    if (dc == 0 && dr == 0) continue;
-                    var candidate = GetTile(last.Column + dc, last.Row + dr);
-                    if (candidate == null || candidate.IsEmpty || path.Contains(candidate)) continue;
+	if path.size() >= 12: # sane upper bound, avoids runaway recursion
+		return
 
-                    path.Add(candidate);
-                    ScanFrom(path, validator, maxLength, results);
-                    path.RemoveAt(path.Count - 1);
-                }
-            }
-        }
+	var last: BoardCell = path[path.size() - 1]
+	for dc in range(-1, 2):
+		for dr in range(-1, 2):
+			if dc == 0 and dr == 0:
+				continue
+			var candidate := get_cell(last.column + dc, last.row + dr)
+			if candidate == null or candidate.is_empty() or path.has(candidate):
+				continue
 
-        private string BuildWord(List<LetterTile> path)
-        {
-            var sb = new System.Text.StringBuilder();
-            foreach (var tile in path) sb.Append(tile.Letter);
-            return sb.ToString();
-        }
-    }
-}
+			path.append(candidate)
+			_scan_from(path, seen_words, results)
+			path.pop_back()
+
+func _build_word(path: Array) -> String:
+	var s := ""
+	for cell in path:
+		s += cell.letter
+	return s
+
+## Text rendering of the board, top row first — useful for the debug harness
+## and for console/print-based testing before any real art exists.
+func get_board_text() -> String:
+	var lines: Array[String] = []
+	for r in range(ROWS - 1, -1, -1):
+		var row_str := ""
+		for c in range(COLUMNS):
+			var cell: BoardCell = grid[c][r]
+			row_str += (cell.letter if not cell.is_empty() else ".") + " "
+		lines.append(row_str)
+	return "\n".join(lines)
