@@ -1,0 +1,33 @@
+extends Node
+
+## Autoload singleton name: WordValidator
+##
+## Plain valid/invalid lookup. Loads a word list once; swap the source (this
+## text file, a bundled SQLite db, a remote fetch) without touching any caller.
+## Definitions/etymology live in DictionaryManager, kept separate so a missing
+## definition never blocks a word's validity.
+
+@export var word_list_path: String = "res://data/word_list_sample.txt"
+@export var minimum_word_length: int = 3
+
+var valid_words: Dictionary = {}
+
+func _ready() -> void:
+	_load_word_list()
+
+func _load_word_list() -> void:
+	if not FileAccess.file_exists(word_list_path):
+		push_error("WordValidator: word list not found at %s" % word_list_path)
+		return
+
+	var file := FileAccess.open(word_list_path, FileAccess.READ)
+	while not file.eof_reached():
+		var line := file.get_line().strip_edges().to_upper()
+		if line.length() >= minimum_word_length:
+			valid_words[line] = true
+	file.close()
+
+func is_valid_word(candidate: String) -> bool:
+	if candidate.is_empty() or candidate.length() < minimum_word_length:
+		return false
+	return valid_words.has(candidate.to_upper())
