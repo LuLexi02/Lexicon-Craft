@@ -1,77 +1,77 @@
-using UnityEngine;
+extends Node
 
-namespace Lexicon
-{
-    /// <summary>
-    /// Governs turn cadence: whose go it is, drawing and dropping the turn's
-    /// letter, and the 2-second end-of-go confirmation buffer. Word-finding itself
-    /// is not gated turn-by-turn beyond "only the active Seeker can act" — there is
-    /// no separate contest phase.
-    /// </summary>
-    public class TurnManager : MonoBehaviour
-    {
-        [SerializeField] private BoardManager board;
-        [SerializeField] private ScoreManager scoreManager; // plain C# class, wired up by GameManager
-        [SerializeField] private float endOfGoConfirmSeconds = 2.0f;
+## Autoload singleton name: TurnManager
+##
+## Drives the turn cadence for PvP: draw a letter, wait for the active player
+## to pick a column, let them hunt/queue words freely, then run the 2-second
+## confirmation buffer before committing and handing over to the other player.
+## AIOpponent drives this same public API from the bot's side of a turn for
+## solo mode.
 
-        public SeekerId ActiveSeeker { get; private set; } = SeekerId.SeekerOne;
-        public char PendingLetter { get; private set; }
-        public bool AwaitingColumnChoice { get; private set; }
-        public bool AwaitingConfirmation { get; private set; }
-        public bool IsGameOver => board.IsBoardFull();
+signal turn_began(active_player: ScoreManager.PlayerId)
+signal turn_committed(player: ScoreManager.PlayerId, points_this_turn: int)
+signal game_over
 
-        private float confirmSecondsRemaining;
+const END_OF_GO_BUFFER_SECONDS := 2.0
 
-        public void BeginGame(ScoreManager score)
-        {
-            scoreManager = score;
-            BeginTurn();
-        }
+var active_player: ScoreManager.PlayerId = ScoreManager.PlayerId.SEEKER_ONE
+var pending_letter: String = ""
+var awaiting_column_choice: bool = false
+var awaiting_confirm_buffer: bool = false
+var is_game_over: bool = false
 
-        private void BeginTurn()
-        {
-            if (IsGameOver) return;
-            PendingLetter = board.DrawLetterFromBag();
-            AwaitingColumnChoice = true;
-        }
+func _ready() -> void:
+	_begin_turn()
 
-        /// <summary>Called when the active Seeker taps a column to drop this turn's
-        /// letter. Returns false if that column is already full.</summary>
-        public bool ChooseColumn(int column)
-        {
-            if (!AwaitingColumnChoice) return false;
-            if (!board.TryDropLetter(column, PendingLetter)) return false;
+func _begin_turn() -> void:
+	if not BoardManager.has_any_empty_cell():
+		is_game_over = true
+		game_over.emit()
+		return
 
-            AwaitingColumnChoice = false;
-            // Hunting phase now open: the active Seeker can queue words via
-            // WordInputController for the rest of their go.
-            return true;
-        }
+	pending_letter = BoardManager.draw_letter_from_bag()
+	awaiting_column_choice = true
+	turn_began.emit(active_player)
 
-        /// <summary>The active Seeker declares they're done finding words. Opens the
-        /// short confirmation buffer before the turn actually commits and passes.</summary>
-        public void RequestEndGo()
-        {
-            if (AwaitingColumnChoice || AwaitingConfirmation) return;
-            AwaitingConfirmation = true;
-            confirmSecondsRemaining = endOfGoConfirmSeconds;
-        }
+## Called by the input layer when the active player taps a column to drop
+## this turn's letter into. Returns false if that column is already full.
+func choose_column(column: int) -> bool:
+	if not awaiting_column_choice:
+		return false
+	if BoardManager.is_column_full(column):
+		return false
 
-        private void Update()
-        {
-            if (!AwaitingConfirmation) return;
-            confirmSecondsRemaining -= Time.deltaTime;
-            if (confirmSecondsRemaining <= 0f) CommitAndAdvance();
-        }
+	BoardManager.drop_letter_in_column(column, pending_letter)
+	awaiting_column_choice = false
+	# Hunting phase now open — WordInputController can start queuing words.
+	return true
 
-        private void CommitAndAdvance()
-        {
-            AwaitingConfirmation = false;
-            scoreManager.CommitTurn(ActiveSeeker);
-            ActiveSeeker = ActiveSeeker == SeekerId.SeekerOne ? SeekerId.SeekerTwo : SeekerId.SeekerOne;
+## Player declares they're done finding words for this go. Starts the short
+## personal confirmation window before the turn actually commits.
+func request_end_go() -> void:
+	if awaiting_column_choice or awaiting_confirm_buffer:
+		return
 
-            if (!IsGameOver) BeginTurn();
-            // else: GameManager should detect IsGameOver and show final scores.
-        }
-    }
-}
+	awaiting_confirm_buffer = true
+	await get_tree().create_timer(END_OF_GO_BUFFER_SECONDS).timeout
+	if awaiting_confirm_buffer: # guard in case cancel_end_go() was called during the wait
+		_commit_and_advance()
+
+## Lets the player back out of the buffer to keep editing, if your UI wants that.
+func cancel_end_go() -> void:
+	awaiting_confirm_buffer = false
+
+func _commit_and_advance() -> void:
+	awaiting_confirm_buffer = false
+
+	var points_this_turn := 0
+	for word in ScoreManager.current_turn_queue:
+		points_this_turn += word.length()
+
+	var just_played := active_player
+	ScoreManager.commit_turn(just_played)
+	turn_committed.emit(just_played, points_this_turn)
+
+	active_player = ScoreManager.PlayerId.SEEKER_TWO if active_player == ScoreManager.PlayerId.SEEKER_ONE \
+		else ScoreManager.PlayerId.SEEKER_ONE
+	_begin_turn()
