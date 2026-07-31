@@ -1,0 +1,202 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace Lexicon
+{
+    /// <summary>
+    /// Owns the persistent board. Letters are introduced Connect-4 style: the
+    /// active player picks a column, and the letter drops under gravity to the
+    /// lowest currently-empty cell in that column. The board never clears — it
+    /// only ever fills up, until no column has room left.
+    /// </summary>
+    public class BoardManager : MonoBehaviour
+    {
+        [Header("Board size")]
+        [SerializeField] private int columns = 8;
+        [SerializeField] private int rows = 8;
+        [SerializeField] private float tileSpacing = 1.0f;
+        [SerializeField] private LetterTile tilePrefab;
+
+        private LetterTile[,] grid; // [column, row], row 0 = bottom
+
+        // Rough English letter-frequency weighting (not tuned yet — placeholder
+        // distribution, swap for a properly weighted bag once the word list is chosen).
+        private const string LetterBag =
+            "EEEEEEEEEEEEAAAAAAAAAIIIIIIIIIOOOOOOOONNNNNNRRRRRRTTTTTTLLLLSSSSUUUUDDDDGGGBBCCMMPPFFHHVVWWYYKJXQZ";
+
+        public int Columns => columns;
+        public int Rows => rows;
+
+        private void Awake()
+        {
+            grid = new LetterTile[columns, rows];
+            for (int c = 0; c < columns; c++)
+            {
+                for (int r = 0; r < rows; r++)
+                {
+                    var tile = Instantiate(tilePrefab, CellToWorld(c, r), Quaternion.identity, transform);
+                    tile.SetEmpty(c, r);
+                    grid[c, r] = tile;
+                }
+            }
+        }
+
+        private Vector3 CellToWorld(int column, int row) => new Vector3(column * tileSpacing, row * tileSpacing, 0f);
+
+        public char DrawLetterFromBag() => LetterBag[Random.Range(0, LetterBag.Length)];
+
+        public bool IsColumnFull(int column)
+        {
+            if (column < 0 || column >= columns) return true;
+            return !grid[column, rows - 1].IsEmpty;
+        }
+
+        /// <summary>
+        /// Drops a letter into the given column under gravity. Returns false if
+        /// the column is already full — caller (TurnManager/UI) should require the
+        /// active player to choose a different column in that case.
+        /// </summary>
+        public bool TryDropLetter(int column, char letter)
+        {
+            if (IsColumnFull(column)) return false;
+
+            for (int r = 0; r < rows; r++)
+            {
+                if (!grid[column, r].IsEmpty) continue;
+                grid[column, r].PlaceLetter(letter);
+                return true;
+            }
+            return false;
+        }
+
+        public bool IsBoardFull()
+        {
+            for (int c = 0; c < columns; c++)
+                if (!IsColumnFull(c)) return false;
+            return true;
+        }
+
+        public LetterTile GetTile(int column, int row)
+        {
+            if (column < 0 || column >= columns || row < 0 || row >= rows) return null;
+            return grid[column, row];
+        }
+
+        /// <summary>Any-direction adjacency per Lexicon's word-formation rule, and no
+        /// tile reused twice within the same word.</summary>
+        public bool IsPathConnectedAndDistinct(List<LetterTile> path)
+        {
+            var seen = new HashSet<LetterTile>();
+            for (int i = 0; i < path.Count; i++)
+            {
+                if (!seen.Add(path[i])) return false;
+                if (i == 0) continue;
+
+                int dc = Mathf.Abs(path[i].Column - path[i - 1].Column);
+                int dr = Mathf.Abs(path[i].Row - path[i - 1].Row);
+                bool adjacent = dc <= 1 && dr <= 1 && (dc + dr) > 0;
+                if (!adjacent) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Traces a path for a typed word (which has no drag path attached yet),
+        /// searching every start cell and direction. Returns the first valid path
+        /// found, or null if the word doesn't currently exist on the board.
+        /// </summary>
+        public List<LetterTile> FindPathForWord(string word)
+        {
+            word = word.ToUpperInvariant();
+            if (string.IsNullOrEmpty(word)) return null;
+
+            for (int c = 0; c < columns; c++)
+            {
+                for (int r = 0; r < rows; r++)
+                {
+                    if (grid[c, r].IsEmpty || grid[c, r].Letter != word[0]) continue;
+                    var path = new List<LetterTile> { grid[c, r] };
+                    var found = TryExtendPath(path, word, 1);
+                    if (found != null) return found;
+                }
+            }
+            return null;
+        }
+
+        private List<LetterTile> TryExtendPath(List<LetterTile> path, string word, int nextIndex)
+        {
+            if (nextIndex == word.Length) return path;
+
+            var last = path[path.Count - 1];
+            for (int dc = -1; dc <= 1; dc++)
+            {
+                for (int dr = -1; dr <= 1; dr++)
+                {
+                    if (dc == 0 && dr == 0) continue;
+                    var candidate = GetTile(last.Column + dc, last.Row + dr);
+                    if (candidate == null || candidate.IsEmpty || path.Contains(candidate)) continue;
+                    if (candidate.Letter != word[nextIndex]) continue;
+
+                    path.Add(candidate);
+                    var result = TryExtendPath(path, word, nextIndex + 1);
+                    if (result != null) return result;
+                    path.RemoveAt(path.Count - 1);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Every currently-formable, on-board word is a candidate for
+        /// SoloAIOpponent to "notice" — this brute-force scan is fine at Alpha's
+        /// board size, but would need indexing/optimisation at larger scales.
+        /// </summary>
+        public IEnumerable<(string word, List<LetterTile> path)> FindAllWordsOnBoard(WordValidator validator, int maxLength = 8)
+        {
+            var results = new List<(string, List<LetterTile>)>();
+            for (int c = 0; c < columns; c++)
+            {
+                for (int r = 0; r < rows; r++)
+                {
+                    if (grid[c, r].IsEmpty) continue;
+                    var path = new List<LetterTile> { grid[c, r] };
+                    ScanFrom(path, validator, maxLength, results);
+                }
+            }
+            return results;
+        }
+
+        private void ScanFrom(List<LetterTile> path, WordValidator validator, int maxLength, List<(string, List<LetterTile>)> results)
+        {
+            if (path.Count >= 3)
+            {
+                string candidate = BuildWord(path);
+                if (validator.IsValidWord(candidate))
+                    results.Add((candidate, new List<LetterTile>(path)));
+            }
+            if (path.Count >= maxLength) return;
+
+            var last = path[path.Count - 1];
+            for (int dc = -1; dc <= 1; dc++)
+            {
+                for (int dr = -1; dr <= 1; dr++)
+                {
+                    if (dc == 0 && dr == 0) continue;
+                    var candidate = GetTile(last.Column + dc, last.Row + dr);
+                    if (candidate == null || candidate.IsEmpty || path.Contains(candidate)) continue;
+
+                    path.Add(candidate);
+                    ScanFrom(path, validator, maxLength, results);
+                    path.RemoveAt(path.Count - 1);
+                }
+            }
+        }
+
+        private string BuildWord(List<LetterTile> path)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var tile in path) sb.Append(tile.Letter);
+            return sb.ToString();
+        }
+    }
+}
