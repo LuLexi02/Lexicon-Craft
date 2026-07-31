@@ -1,0 +1,48 @@
+extends Node
+
+## Not an autoload — instance this once, only when solo mode is active.
+## Drives a bot's turn. Deliberately does NOT get a perfect list of every word
+## on the board to just pick the best ones — it scans for everything
+## available via BoardManager.find_all_valid_words, then applies a per-word
+## "notice chance" so its challenge stays rooted in observation, matching the
+## same tension a human faces, rather than giving it a speed or knowledge
+## advantage a human wouldn't have.
+
+@export var base_notice_chance: float = 0.6
+@export var length_penalty_per_letter: float = 0.08
+@export var thinking_delay_seconds: float = 0.6 # purely for pacing/feel, not a mechanic
+
+func take_turn() -> void:
+	await get_tree().create_timer(thinking_delay_seconds).timeout
+
+	var column := _choose_column()
+	TurnManager.choose_column(column)
+
+	await get_tree().create_timer(thinking_delay_seconds).timeout
+
+	var available: Array = BoardManager.find_all_valid_words()
+	for entry in available:
+		var word: String = entry["word"]
+		if not _roll_notice(word.length()):
+			continue # the bot simply doesn't spot this one
+		ScoreManager.try_queue_word(word)
+
+	await get_tree().create_timer(thinking_delay_seconds).timeout
+	TurnManager.request_end_go()
+
+func _roll_notice(word_length: int) -> bool:
+	var chance: float = base_notice_chance - length_penalty_per_letter * max(0, word_length - 3)
+	chance = clamp(chance, 0.0, 1.0)
+	return randf() < chance
+
+## [assumption] Placeholder placement strategy: picks a random non-full
+## column. A smarter bot could weight columns toward where its own recent
+## finds cluster, but that's a tuning pass for later, not needed to test
+## whether solo mode is fun.
+func _choose_column() -> int:
+	var open_columns: Array[int] = []
+	for c in range(BoardManager.COLUMNS):
+		if not BoardManager.is_column_full(c):
+			open_columns.append(c)
+
+	return open_columns[randi() % open_columns.size()] if open_columns.size() > 0 else 0
