@@ -1,0 +1,21 @@
+class_name BoardCell
+extends RefCounted
+
+## Plain data for one board position. Deliberately not a scene/Node — the board's
+## data and its future visuals are kept separate, so the core rules can be built
+## and tested before any art or tile scenes exist. A visual layer (see
+## letter_tile.gd) can mirror this data later without changing any game logic.
+
+var column: int
+var row: int
+var letter: String = ""
+
+func _init(p_column: int, p_row: int) -> void:
+	column = p_column
+	row = p_row
+
+func is_empty() -> bool:
+	return letter == ""
+
+func place_letter(new_letter: String) -> void:
+	letter = new_letter
