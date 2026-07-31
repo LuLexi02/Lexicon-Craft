@@ -1,0 +1,46 @@
+extends Node
+
+## Autoload singleton name: DictionaryManager
+##
+## Definitions/etymology/usage lookup, kept fully separate from WordValidator
+## so a missing definition never blocks a word from being valid and scorable.
+## [assumption] For the alpha this is a simple local lookup with a clear
+## "missing" path; the actual open dictionary data source and any
+## community-contribution submission flow are not built yet.
+
+@export var definitions_path: String = "res://data/definitions_sample.txt"
+
+var entries: Dictionary = {}
+
+func _ready() -> void:
+	_load_definitions()
+
+func _load_definitions() -> void:
+	if not FileAccess.file_exists(definitions_path):
+		return # fine — definitions are additive, never required
+
+	var file := FileAccess.open(definitions_path, FileAccess.READ)
+	while not file.eof_reached():
+		var line := file.get_line()
+		var parts := line.split("|")
+		if parts.size() < 2:
+			continue
+
+		var word := parts[0].strip_edges().to_upper()
+		entries[word] = {
+			"word": word,
+			"definition": parts[1].strip_edges() if parts.size() > 1 else "",
+			"etymology": parts[2].strip_edges() if parts.size() > 2 else "",
+			"usage": parts[3].strip_edges() if parts.size() > 3 else "",
+			"rarity": "", # left empty until player-base frequency data exists (see GDD Section 5)
+			"has_definition": true
+		}
+	file.close()
+
+## Always returns something displayable — has_definition tells the UI whether
+## to show real content or a "not yet documented, help us add it" prompt.
+func get_entry(word: String) -> Dictionary:
+	var upper := word.to_upper()
+	if entries.has(upper):
+		return entries[upper]
+	return {"word": upper, "has_definition": false}
