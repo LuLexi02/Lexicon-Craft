@@ -1,0 +1,59 @@
+using System.Collections.Generic;
+
+namespace Lexicon
+{
+    public enum SeekerId { SeekerOne, SeekerTwo }
+    public enum ClaimResult { Rejected, Queued }
+
+    /// <summary>
+    /// Tracks scores and the permanent claimed-words ledger. There is no pending
+    /// claim, contest window, or ownership-transfer logic of any kind — once a
+    /// turn commits, its words are locked forever. "Stealing" needs no special
+    /// handling here: it's just an ordinary claim by whoever's turn it is, on
+    /// whatever the previous Seeker left unclaimed.
+    /// </summary>
+    public class ScoreManager
+    {
+        private readonly HashSet<string> claimedWords = new HashSet<string>();
+        private readonly List<string> currentTurnQueue = new List<string>();
+        private readonly Dictionary<SeekerId, int> scores = new Dictionary<SeekerId, int>
+        {
+            { SeekerId.SeekerOne, 0 },
+            { SeekerId.SeekerTwo, 0 }
+        };
+
+        public int GetScore(SeekerId seeker) => scores[seeker];
+        public bool IsWordAlreadyClaimed(string word) => claimedWords.Contains(word.ToUpperInvariant());
+        public IReadOnlyList<string> CurrentTurnQueue => currentTurnQueue;
+
+        /// <summary>Queues a word found during the active Seeker's go. Not scored yet —
+        /// only locked in once TurnManager calls CommitTurn.</summary>
+        public ClaimResult TryQueueWord(string word)
+        {
+            word = word.ToUpperInvariant();
+            if (claimedWords.Contains(word)) return ClaimResult.Rejected;
+            if (currentTurnQueue.Contains(word)) return ClaimResult.Rejected;
+
+            currentTurnQueue.Add(word);
+            return ClaimResult.Queued;
+        }
+
+        /// <summary>Lets the active Seeker remove a mistaken entry before committing.</summary>
+        public bool RetractWord(string word) => currentTurnQueue.Remove(word.ToUpperInvariant());
+
+        /// <summary>
+        /// Called once the end-of-go confirmation buffer expires. Everything left
+        /// in the queue locks in at once, permanently, for the Seeker whose turn
+        /// this was — nothing here is ever contestable again.
+        /// </summary>
+        public void CommitTurn(SeekerId seeker)
+        {
+            foreach (var word in currentTurnQueue)
+            {
+                claimedWords.Add(word);
+                scores[seeker] += word.Length;
+            }
+            currentTurnQueue.Clear();
+        }
+    }
+}
