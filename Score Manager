@@ -1,59 +1,60 @@
-using System.Collections.Generic;
+extends Node
 
-namespace Lexicon
-{
-    public enum SeekerId { SeekerOne, SeekerTwo }
-    public enum ClaimResult { Rejected, Queued }
+## Autoload singleton name: ScoreManager
+##
+## Tracks scores and the permanent word ledger. There is deliberately NO
+## contest window, pending-claim state, or ownership-transfer logic. Once a
+## turn commits, its words are locked forever. "Stealing" only ever means
+## claiming a word the previous player left unclaimed; that needs no special
+## handling here, since it's just an ordinary claim made on whoever's turn
+## it currently is.
 
-    /// <summary>
-    /// Tracks scores and the permanent claimed-words ledger. There is no pending
-    /// claim, contest window, or ownership-transfer logic of any kind — once a
-    /// turn commits, its words are locked forever. "Stealing" needs no special
-    /// handling here: it's just an ordinary claim by whoever's turn it is, on
-    /// whatever the previous Seeker left unclaimed.
-    /// </summary>
-    public class ScoreManager
-    {
-        private readonly HashSet<string> claimedWords = new HashSet<string>();
-        private readonly List<string> currentTurnQueue = new List<string>();
-        private readonly Dictionary<SeekerId, int> scores = new Dictionary<SeekerId, int>
-        {
-            { SeekerId.SeekerOne, 0 },
-            { SeekerId.SeekerTwo, 0 }
-        };
+enum PlayerId { SEEKER_ONE, SEEKER_TWO }
+enum ClaimResult { REJECTED, QUEUED }
 
-        public int GetScore(SeekerId seeker) => scores[seeker];
-        public bool IsWordAlreadyClaimed(string word) => claimedWords.Contains(word.ToUpperInvariant());
-        public IReadOnlyList<string> CurrentTurnQueue => currentTurnQueue;
+# Every word ever committed by either player — permanently unavailable afterwards.
+var claimed_words: Dictionary = {}
 
-        /// <summary>Queues a word found during the active Seeker's go. Not scored yet —
-        /// only locked in once TurnManager calls CommitTurn.</summary>
-        public ClaimResult TryQueueWord(string word)
-        {
-            word = word.ToUpperInvariant();
-            if (claimedWords.Contains(word)) return ClaimResult.Rejected;
-            if (currentTurnQueue.Contains(word)) return ClaimResult.Rejected;
+# The active player's in-progress finds this turn. Freely editable
+# (queue/retract) until TurnManager calls commit_turn.
+var current_turn_queue: Array[String] = []
 
-            currentTurnQueue.Add(word);
-            return ClaimResult.Queued;
-        }
-
-        /// <summary>Lets the active Seeker remove a mistaken entry before committing.</summary>
-        public bool RetractWord(string word) => currentTurnQueue.Remove(word.ToUpperInvariant());
-
-        /// <summary>
-        /// Called once the end-of-go confirmation buffer expires. Everything left
-        /// in the queue locks in at once, permanently, for the Seeker whose turn
-        /// this was — nothing here is ever contestable again.
-        /// </summary>
-        public void CommitTurn(SeekerId seeker)
-        {
-            foreach (var word in currentTurnQueue)
-            {
-                claimedWords.Add(word);
-                scores[seeker] += word.Length;
-            }
-            currentTurnQueue.Clear();
-        }
-    }
+var scores: Dictionary = {
+	PlayerId.SEEKER_ONE: 0,
+	PlayerId.SEEKER_TWO: 0
 }
+
+func get_score(player: PlayerId) -> int:
+	return scores[player]
+
+func is_word_already_claimed(word: String) -> bool:
+	return claimed_words.has(word.to_upper())
+
+## Called whenever the active player drags or types a word during their own
+## go. Does not score anything yet — just queues it, pending commit.
+func try_queue_word(word: String) -> ClaimResult:
+	var upper := word.to_upper()
+	if claimed_words.has(upper):
+		return ClaimResult.REJECTED     # already permanently claimed by anyone, ever
+	if current_turn_queue.has(upper):
+		return ClaimResult.REJECTED     # already queued this same go
+
+	current_turn_queue.append(upper)
+	return ClaimResult.QUEUED
+
+## Lets the active player remove a mistaken entry before committing.
+func retract_word(word: String) -> bool:
+	var upper := word.to_upper()
+	if current_turn_queue.has(upper):
+		current_turn_queue.erase(upper)
+		return true
+	return false
+
+## Called by TurnManager once the end-of-go confirmation buffer has expired.
+## Everything left in the queue locks in at once, permanently, for the player
+## whose turn this was. Nothing here is ever contestable again by anyone.
+func commit_turn(player: PlayerId) -> void:
+	for word in current_turn_queue:
+		claimed_words[word] = true
+		scores[player] += word.length()
+	current_turn_queue.clear()
