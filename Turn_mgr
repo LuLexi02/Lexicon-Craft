@@ -1,0 +1,77 @@
+using UnityEngine;
+
+namespace Lexicon
+{
+    /// <summary>
+    /// Governs turn cadence: whose go it is, drawing and dropping the turn's
+    /// letter, and the 2-second end-of-go confirmation buffer. Word-finding itself
+    /// is not gated turn-by-turn beyond "only the active Seeker can act" — there is
+    /// no separate contest phase.
+    /// </summary>
+    public class TurnManager : MonoBehaviour
+    {
+        [SerializeField] private BoardManager board;
+        [SerializeField] private ScoreManager scoreManager; // plain C# class, wired up by GameManager
+        [SerializeField] private float endOfGoConfirmSeconds = 2.0f;
+
+        public SeekerId ActiveSeeker { get; private set; } = SeekerId.SeekerOne;
+        public char PendingLetter { get; private set; }
+        public bool AwaitingColumnChoice { get; private set; }
+        public bool AwaitingConfirmation { get; private set; }
+        public bool IsGameOver => board.IsBoardFull();
+
+        private float confirmSecondsRemaining;
+
+        public void BeginGame(ScoreManager score)
+        {
+            scoreManager = score;
+            BeginTurn();
+        }
+
+        private void BeginTurn()
+        {
+            if (IsGameOver) return;
+            PendingLetter = board.DrawLetterFromBag();
+            AwaitingColumnChoice = true;
+        }
+
+        /// <summary>Called when the active Seeker taps a column to drop this turn's
+        /// letter. Returns false if that column is already full.</summary>
+        public bool ChooseColumn(int column)
+        {
+            if (!AwaitingColumnChoice) return false;
+            if (!board.TryDropLetter(column, PendingLetter)) return false;
+
+            AwaitingColumnChoice = false;
+            // Hunting phase now open: the active Seeker can queue words via
+            // WordInputController for the rest of their go.
+            return true;
+        }
+
+        /// <summary>The active Seeker declares they're done finding words. Opens the
+        /// short confirmation buffer before the turn actually commits and passes.</summary>
+        public void RequestEndGo()
+        {
+            if (AwaitingColumnChoice || AwaitingConfirmation) return;
+            AwaitingConfirmation = true;
+            confirmSecondsRemaining = endOfGoConfirmSeconds;
+        }
+
+        private void Update()
+        {
+            if (!AwaitingConfirmation) return;
+            confirmSecondsRemaining -= Time.deltaTime;
+            if (confirmSecondsRemaining <= 0f) CommitAndAdvance();
+        }
+
+        private void CommitAndAdvance()
+        {
+            AwaitingConfirmation = false;
+            scoreManager.CommitTurn(ActiveSeeker);
+            ActiveSeeker = ActiveSeeker == SeekerId.SeekerOne ? SeekerId.SeekerTwo : SeekerId.SeekerOne;
+
+            if (!IsGameOver) BeginTurn();
+            // else: GameManager should detect IsGameOver and show final scores.
+        }
+    }
+}
